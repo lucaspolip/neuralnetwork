@@ -1,0 +1,948 @@
+---
+title: "MY474 - Problem Set 5"
+date: "29 March 2023"
+output: html_document
+---
+
+This is an individual assignment.
+
+
+__Exercise 1: Engineering missing value indicator features__
+
+In certain setups with tabular data that are commonly encountered in research and business cases, you will find that engineered features can potentially improve performance in prediction much more than the choice of the algorithm itself. In these cases, data scientists therefore often spend a lot of time carefully thinking about the set of features. This and the following exercise will study the topic in more detail.
+
+The exemplary dataset we are going to look at is a sample of housing data from California. One line/observation in this dataset is a block. The task is to build a model that predicts the variable `median_house_value` as well as possible. You can find the data in the files `housing_train.csv` and `housing_test.csv`.
+
+Loading packages:
+
+```{r}
+library("tidyverse")
+library("glmnet")
+library("tensorflow")
+library("keras")
+library(DescTools)
+library("keras")
+
+```
+
+Loading the data:
+
+```{r}
+train_data <- read_csv("data/housing_train.csv")
+test_data <- read_csv("data/housing_test.csv")
+```
+
+
+In our example here, some features in the training and test datasets have missing values. In research and work as a data scientist this is a common case. One option is to drop all rows with one or more NA values, however, this also gets rid of a lot of information from the other columns (which can be particularly problematic if the dataset is small to begin with). In this exercise we are trying to use all information in the data and deal with missing values well. 
+
+There are many approaches to impute missing values, with the simplest being to choose the column mean (continuous variable) or mode (categorical variable). More important than the imputation technique itself (!), however, is often to signal to the model that a value has been imputed at all. This is what we are going to study.
+
+a) Impute missing values in the continuous features of `train_X` and `test_X` with their column mean from `train_X.` This assumes that new test data will come in at high frequency in later implementations of the model, and that it will not be possible to recompute the means including also the test data every time. For missing values in the categorical variable, replace them with the mode of the variable in the training data. Next, using the training data, cross validate a LASSO (note: using the function `lasso_model <- cv.glmnet(...)` does both in one - it chooses the best lambda via cross validation and can also be used to predict afterwards). What is the RMSE that this model achieves on the test data?
+
+To answer this question, read through the code to make sure to understand it and just fill in the blanks: (1.5 points)
+
+
+```{r}
+# Helper function for getting the mode in R (source: https://stackoverflow.com/questions/2547402/how-to-find-the-statistical-mode)
+get_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Because the following imputation is only a reference, we will wrap the code
+# into a function such that we can run it and see the associated RMSE but avoid
+# having many additional objects stored in the global environment afterwards
+simple_imputation <- function() {
+  
+  # Copies of raw data
+  train <- train_data
+  test <- test_data
+  
+  # Computing means using only training data
+  means <- train %>% select(population, median_income) %>% colMeans(na.rm = TRUE)
+  
+  # Imputing missing values of continuous features with train means
+  train[is.na(train$population), "population"] <- means["population"]
+  train[is.na(train$median_income), "median_income"] <- means["median_income"]
+  test[is.na(test$population), "population"] <- means["population"]
+  test[is.na(test$median_income), "median_income"] <- means["median_income"]
+  
+  # Adding the mode for missing categorical variable values
+  train[is.na(train$ocean_proximity), "ocean_proximity"] <- get_mode(train$ocean_proximity)
+  test[is.na(test$ocean_proximity), "ocean_proximity"] <- get_mode(train$ocean_proximity)
+  
+  # training and test X/y
+  train_X <- model.matrix(~., train %>% select(-median_house_value))
+  test_X <- model.matrix(~., test %>% select(-median_house_value))
+  
+  # Why do we use `model.matrix` to compute the input for the glmnet's LASSO?
+  # It transforms categorical levels into 0/1 and and also adds an intercept column
+  
+  # Train/test y's
+  train_y <- train %>% pull(median_house_value)
+  test_y <- test %>% pull(median_house_value)
+  
+  # Train lasso model
+  lasso_model <- cv.glmnet(x = train_X, y = train_y)
+  
+  # Predict train_y_hat and test_y_hat
+  train_y_hat <- predict(lasso_model, train_X)
+  test_y_hat <- predict(lasso_model, test_X)
+  
+  # Test RMSE
+  print(sqrt(mean((test_y - test_y_hat)^2)))
+  
+}
+
+# Running simple imputation
+simple_imputation()
+```
+
+
+b) The approach above is a naive way to deal with missing values. Our first engineered features will therefore be new columns with missing value indicators. Add one indicator column to both `train_X` and `test_X` for each _continuous_ variable with missing values. These indicator columns take a value of 1 if the value in a corresponding variable was imputed and zero otherwise. Conveniently, for each categorical variable, you can just add a new label if an observation is missing (instead of using the mode). Train a model with the new `train_X` matrix containing the indicators and predict with the new `test_X` matrix containing the indicators. 
+
+To answer this question, again fill in the blanks in the following code. What test RMSE do you find now? Lastly, when do you think will adding such indicator columns be most important? (1.5 points)
+
+
+```{r}
+# Copies of raw data
+train <- train_data
+test <- test_data
+
+# Computing means using only training data
+means <- train %>% select(population, median_income) %>% colMeans(na.rm = TRUE)
+
+# Adding missing value indicators for continuous features
+train$population_indicator <- as.numeric(is.na(train$population))
+train$median_income_indicator <- as.numeric(is.na(train$median_income))
+test$population_indicator <- as.numeric(is.na(test$population))
+test$median_income_indicator <- as.numeric(is.na(test$median_income))
+
+# Imputing missing values of continuous features with train means
+train[is.na(train$population), "population"] <- means["population"]
+train[is.na(train$median_income), "median_income"] <- means["median_income"]
+test[is.na(test$population), "population"] <- means["population"]
+test[is.na(test$median_income), "median_income"] <- means["median_income"]
+
+# Adding new labels for categorical variables
+train[is.na(train$ocean_proximity), "ocean_proximity"] <- "not_available"
+test[is.na(test$ocean_proximity), "ocean_proximity"] <- "not_available"
+
+# training and test X/y
+train_X <- model.matrix(~., train %>% select(-median_house_value))
+test_X <- model.matrix(~., test %>% select(-median_house_value))
+# Why do we use `model.matrix` to compute the input for the glmnet's LASSO?
+# What does `model.matrix` do here?
+  # It transforms categorical levels into 0/1 and and also adds an intercept column
+
+
+# Train/test y's
+train_y <- train %>% pull(median_house_value)
+test_y <- test %>% pull(median_house_value)
+
+# Train lasso model
+set.seed(123)
+lasso_model <- cv.glmnet(x = train_X, y = train_y)
+
+# Predict train_y_hat and test_y_hat
+train_y_hat <- predict(lasso_model, train_X)
+test_y_hat <- predict(lasso_model, test_X)
+
+# Test RMSE
+sqrt(mean((test_y - test_y_hat)^2))
+
+
+```
+
+
+__Exercise 2: General feature engineering__
+
+Unfortunately there is no standardised approach to engineering features that always manages to improve predictions. In the following, I have therefore assembled a list of some ideas and thoughts on feature engineering. Many of these might eventually not improve a particular problem, but if you have the time it can be worth it to try these and similar approaches. It is often the combination of many small improvements which determine the best model. In business applications, small improvements in predictions can also translate into relevant financial gains (think e.g. of having slightly better predictions of prices which consumers would be willing to pay in a large web shop). Only very few of the bullet points listed below might help/be applicable for this particular problem, the purpose of the list is also to be a starting point which might be helpful for your future work.
+
+- Is it possible to gather data on new features which could have predictive power for the respective problem? It can be worth it to first take a step back and think about what the ideal predictive feature for a particular problem could be. Would it be possible to obtain data for this feature or a similar one? You can also use measures of feature importance to get a broad overview which group of features is more predictive and whether you can find similar new data, but there is clear value in first thinking about the problem more abstractly before running such computations. 
+
+- Whether you impute missing values in continuous features just with the mean or with an advanced method, it is key to add new indicator features as we have done in Exercise 1.
+
+- Create histograms of features, do some have very skewed distributions with outliers which might throw off predictions? Potentially try transformations such as the log for these features. Do you find that the transformed features look more normally distributed in histograms? Then it might be useful to use those. Note, however, that when you try to predict y values with a lot of outliers and only use a linear model, the outliers in the x features before any log transform can also be helpful in predicting the outlier y values. In contrast, a non-linear model could also predict y outliers well if the corresponding x values have a more normally distributed shape and indeed further benefit from less erratic feature values.
+
+- Try to winsorize or remove extreme outliers in the outcome variable or features that might bias predictions on the non-outlier observations. Another approach is to log transform the outcome variable. Beware though that by Jensen's inequality your predictions will be biased if you transform the outcome variable back with exp(y_hat) afterwards. This bias might be small, however, for a given application 
+
+- To minimise the negative impact of outlier observations in the outcome variable on the non-outlier observation without winsorizing or removing outliers, it can also be useful to use a Huber loss function in regression. Flexible models like LightGBM allow to swap the loss function relatively easily.
+
+- It can be interesting to check pairwise correlations of features with the outcome variable. Are there some clear associations, potentially non-linear? Then it might be helpful to either try adding higher order terms of the feature or even discretising it into several indicator variables that change their value to 1 if the feature is in a specific range (this allows the model to fit very non-linear relations between the feature and the outcome variable).
+
+- Another approach is more agnostic, namely to add a range of transformations to the data e.g. squares and interactions (try e.g. `model.matrix( ~.^n, data = some_data)` which creates interactions of order `n` or the function [step_interact](https://recipes.tidymodels.org/reference/step_interact.html)). After you have blown up the number of columns in feature matrix, train e.g. a LASSO or other method that can deal well with many columns. Caveat: Recall that the combinatorics implied by even a very small number `n` can create a very large amount of new columns which can become difficult to handle for the computer's memory and greatly increase training time. Furthermore, higher order terms can behave quite erratically, so it is important to thoroughly test such models using the new transformation on out of sample data.
+
+- When having high-dimensional categoricals, it is usually the case that many of the levels have very few observations. To make training faster and also avoid over-fitting on levels with very few observations, it can be worth it to pool rare levels into an "other" category. This also makes it easier when encountering new observations that have an unknown but rare level in this column and which can then just be assigned the value "other" when using it in a prediction.
+
+- Do you have alternative data sources such as texts, e.g. when predicting the price of a good with an additional product description? You can either apply domain knowledge and extract terms with regular expressions that are relevant to a specific problem (e.g. brands in descriptions of clothes, "gmail" vs "hotmail" email addresses signalling different types of customers, etc.) or take a more agnostic approach and create a document term matrix from the text, normalise it by document length, and add it to your features (yet this would make the problem very high dimensional as every unique word would become an additional feature). Furthermore, when working with texts, also other representations of terms can be helpful such as (pre-trained) word embeddings which can be freely downloaded for most words or context specific word embeddings obtained with transformers.
+
+Using your __LASSO model (it is not allowed in this exercise to user other algorithms)__ built previously including the missing value indicators, modify the code and present a few potential transformations etc. to engineer features for this dataset. Why did you try these in particular?
+
+Could you further bring down the test RMSE predicting `median_house_value` now also using further engineered features? If you could not reduce the test RMSE further from relative to Exercise 1 b), what could be interesting data to collect here? Please clearly report the best test RMSE value you could achieve. (5 points)
+
+
+```{r}
+
+#First, let's transform the function which check the RMSE to make our life easier
+check_rmse  <- function(train, test) {
+  train_X <- model.matrix(~., train %>% select(-median_house_value))
+  test_X <- model.matrix(~., test %>% select(-median_house_value))
+  train_y <- train %>% pull(median_house_value)
+  test_y <- test %>% pull(median_house_value)
+  set.seed(123)
+  lasso_model <- cv.glmnet(x = train_X, y = train_y, nfolds = 10)
+  train_y_hat <- predict(lasso_model, newx = train_X)
+  test_y_hat <- predict(lasso_model, newx = test_X)
+  rmse <- sqrt(mean((test_y - test_y_hat)^2))
+  return(rmse)
+}
+
+
+```
+
+```{r}
+
+
+#Now let's do some data visualization. I will do some data visualization of the features, features with interaction
+
+colnames(train)
+
+lapply(train, class)
+
+features_names <- c("longitude", "latitude", "housing_median_age", "total_rooms", "total_bedrooms", "population", "households", "median_income", "median_house_value")
+
+print(features_names)
+
+for (i in features_names){
+  plot <- ggplot(train, aes(x = !!sym(i))) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(x = i , y = "Count") 
+  print(plot)
+}
+
+ggplot(train, aes(x = ocean_proximity)) +
+  geom_bar(fill = "blue", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Ocean Proximity", x = "Ocean Proximity", y = "Count")
+
+for (i in features_names) {
+  plot <- ggplot(train, aes_string(x = i, y = "median_house_value")) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    theme_minimal() +
+    labs(title = paste(i, "vs. Median House Value"),
+         x = i,
+         y = "Median House Value")
+  print(plot)
+}
+
+for (i in features_names){
+  plot <- ggplot(train, aes(x = factor(0), y = !!sym(i))) +
+    geom_boxplot(fill = "black") +
+    labs(x = "", y = i)
+  print(plot)
+}
+
+#interationg between romes and house holds
+
+train$rooms_per_household <- train$total_rooms / train$households
+test$rooms_per_household <- test$total_rooms / test$households
+
+#interationg between age and median income
+train$income_age_interaction <- train$median_income * train$housing_median_age
+test$income_age_interaction <- test$median_income * test$housing_median_age
+
+#interaction between latitude and longitude 
+
+train$lat_long_interaction <- train$latitude * train$longitude
+test$lat_long_interaction <- test$latitude * test$longitude
+
+#Interaction between population and households
+
+train$pop_household_interaction <- train$population / train$households
+test$pop_household_interaction <- test$population / test$households
+
+#Interaction between bedrooms and households
+train$bedrooms_per_household <- train$total_bedrooms / train$households
+test$bedrooms_per_household <- test$total_bedrooms / test$households
+ 
+#I will create this variable to classify the distribution of the median income among five differen groups (5 is the richest group, and 1 is the poorest group)
+income_categories <- function(data) {
+  data$income_cat <- cut(data$median_income / 1.5,
+                         breaks = c(0, 1, 2, 3, 4, Inf),
+                         labels = c(1, 2, 3, 4, 5),
+                         include.lowest = TRUE)
+  return(data)
+}
+
+train <- income_categories(train)
+test <- income_categories(test)
+
+train$income_cat <- as.numeric(train$income_cat)
+test$income_cat <- as.numeric(test$income_cat)
+
+interactions_variable <- c("rooms_per_household", "income_age_interaction", "lat_long_interaction", "pop_household_interaction", "bedrooms_per_household", "income_cat")
+
+for (i in interactions_variable) {
+  plot <- ggplot(train, aes_string(x = i, y = "median_house_value")) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    theme_minimal() +
+    labs(title = paste(i, "vs. Median House Value"),
+         x = i,
+         y = "Median House Value")
+  print(plot)
+}
+
+
+
+
+```
+**Upon examining the histograms, we observe that the variables exhibit irregular distributions, which may necessitate further transformation. Additionally, certain variable values appear anomalous. For instance, total_bedrooms and total_rooms display exceptionally large values, given the nature of the measurements they represent. These peculiar observations are corroborated by the boxplot analysis, which clearly reveals the presence of outliers in total_rooms, total_bedrooms, and population. Most of the houses are In land or less than one hour from the ocean.**
+
+**Moreover, a preliminary examination of the scatter plots without any transformation suggests that only median_income exhibits a discernible correlation with the median house value. However, upon further investigation of the scatter plots for interaction terms among certain variables, it becomes apparent that the income_age_interaction term demonstrates a more pronounced linear relationship with the median house value. Furthermore, the income category variable appears to have a non-linear association with the outcome variable.**
+```{r}
+
+for (i in features_names) {
+  name<- paste(i, "log", sep = "_")
+  train[[name]] <- log(train[[i]])
+}
+
+
+log_names <- c("longitude_log", "latitude_log", "housing_median_age_log", "total_rooms_log", "total_bedrooms_log", "population_log", "households_log", "median_income_log", "median_house_value_log")
+
+for (i in log_names){
+  plot <- ggplot(train, aes(x = !!sym(i))) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(x = i , y = "Count") 
+  print(plot)
+}
+
+for (i in log_names) {
+  plot <- ggplot(train, aes_string(x = i, y = "median_house_value")) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    theme_minimal() +
+    labs(title = paste(i, "vs. Median House Value"),
+         x = i,
+         y = "Median House Value")
+  print(plot)
+}
+
+for(i in log_names){
+  train <- train %>% select(-all_of(i))
+}
+
+log_names <- c( "total_rooms", "total_bedrooms", "population", "households")
+
+
+for (i in log_names) {
+  train[[i]] <- log(train[[i]])
+  test[[i]] <- log(test[[i]])
+}
+
+```
+**Following the log transformation, the distributions of variables such as total_rooms, total_bedrooms, population, and households more closely resemble a normal distribution. Consequently, these transformed variables will be retained in the original dataset. However, it is important to note that the distributions of median_income and median_house_value display a prominent left skew.**
+
+**Moreover, an analysis of the scatter plots reveals that it is challenging to discern any correlation between the outcome variable and the independent variables, with the exception of median_income_log. The latter appears to exhibit a non-linear relationship with the median house value.**
+
+
+
+```{r} 
+#Correlation
+correlations <- cor(train[, c("longitude", "latitude", "housing_median_age", "total_rooms", "total_bedrooms", "population", "households", "median_income", "rooms_per_household", "income_age_interaction", "lat_long_interaction", "pop_household_interaction", "bedrooms_per_household", "income_cat", "median_house_value")])
+
+correlations_test <- cor(test[, c("longitude", "latitude", "housing_median_age", "total_rooms", "total_bedrooms", "population", "households", "median_income", "rooms_per_household", "income_age_interaction", "lat_long_interaction", "pop_household_interaction", "bedrooms_per_household", "income_cat", "median_house_value")])
+
+# Print correlation of features with the outcome variable
+correlations["median_house_value", ]
+correlations_test["median_house_value", ]
+
+
+```
+**There are some interesting features that we can highlight: Longitude and Latitude are negatively correlated with the outcome variable. However, when we interact them to try to measure spatial effect, the interaction is positively related with the outcome variable. Both the income category (which distribute the median income into five groups) and the median income are highly correlated with the outcome variable. Income_age_interaction and rooms_per_household are also variables highly correlated with the outcome.**
+
+
+```{r}
+
+#First model - very naive. Let's use all variable (without taking the outliers)
+
+check_rmse(train, test) #67367.45
+
+
+#Second model - log transformation of the outcome variable
+
+
+train$median_house_value <- log(train$median_house_value)
+test$median_house_value <- log(test$median_house_value)
+
+check_rmse(train, test) #0.32000
+
+#Try to winsorize to remove some outliers - First a conservative choice, let's choose the lower 1% and upper 99% as quantiles 
+
+outliers_variables <- c("total_rooms", "total_bedrooms", "population", "households", "median_house_value")
+
+for (i in outliers_variables) {
+  train[[i]] <- Winsorize(train[[i]], probs = c(0.01, 0.99))
+  test[[i]] <- Winsorize(test[[i]], probs = c(0.01, 0.99))
+}
+
+check_rmse(train, test) #0.3102
+
+#Third - a less conservative choice
+
+for (i in outliers_variables) {
+  train[[i]] <- Winsorize(train[[i]], probs = c(0.05, 0.95))
+  test[[i]] <- Winsorize(test[[i]], probs = c(0.05, 0.95))
+}
+
+check_rmse(train, test) #0.2996113 (better)
+
+
+#Fourth model - Let's select some variable according to the correlation 
+
+train <- train %>% select(c( "total_rooms", "total_bedrooms", "households", "median_income", "rooms_per_household", "income_age_interaction", "lat_long_interaction", "pop_household_interaction", "bedrooms_per_household", "income_cat", "ocean_proximity",  "median_house_value", "population_indicator", "median_income_indicator"))
+
+test <- test %>% select( c( "total_rooms", "total_bedrooms", "households", "median_income", "rooms_per_household", "income_age_interaction", "lat_long_interaction", "pop_household_interaction", "bedrooms_per_household", "income_cat", "ocean_proximity",  "median_house_value", "population_indicator", "median_income_indicator"))
+
+check_rmse(train, test) #0.3404351 (worst)
+
+```
+
+
+```{r}
+
+#Five model - Now let's check the only having the outcome variable with the log transformation (to do that I need to re-run all the code to the beginning)
+
+get_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+simple_imputation <- function() {
+    train <- train_data
+  test <- test_data
+    means <- train %>% select(population, median_income) %>% colMeans(na.rm = TRUE)
+  train[is.na(train$population), "population"] <- means["population"]
+  train[is.na(train$median_income), "median_income"] <- means["median_income"]
+  test[is.na(test$population), "population"] <- means["population"]
+  test[is.na(test$median_income), "median_income"] <- means["median_income"]
+  train[is.na(train$ocean_proximity), "ocean_proximity"] <- get_mode(train$ocean_proximity)
+  test[is.na(test$ocean_proximity), "ocean_proximity"] <- get_mode(train$ocean_proximity)
+  train_X <- model.matrix(~., train %>% select(-median_house_value))
+  test_X <- model.matrix(~., test %>% select(-median_house_value))
+  train_y <- train %>% pull(median_house_value)
+  test_y <- test %>% pull(median_house_value)
+  lasso_model <- cv.glmnet(x = train_X, y = train_y)
+  train_y_hat <- predict(lasso_model, train_X)
+  test_y_hat <- predict(lasso_model, test_X)
+  print(sqrt(mean((test_y - test_y_hat)^2)))
+  
+}
+train <- train_data
+test <- test_data
+means <- train %>% select(population, median_income) %>% colMeans(na.rm = TRUE)
+train$population_indicator <- as.numeric(is.na(train$population))
+train$median_income_indicator <- as.numeric(is.na(train$median_income))
+test$population_indicator <- as.numeric(is.na(test$population))
+test$median_income_indicator <- as.numeric(is.na(test$median_income))
+train[is.na(train$population), "population"] <- means["population"]
+train[is.na(train$median_income), "median_income"] <- means["median_income"]
+test[is.na(test$population), "population"] <- means["population"]
+test[is.na(test$median_income), "median_income"] <- means["median_income"]
+train[is.na(train$ocean_proximity), "ocean_proximity"] <- "not_available"
+test[is.na(test$ocean_proximity), "ocean_proximity"] <- "not_available"
+
+train$rooms_per_household <- train$total_rooms / train$households
+test$rooms_per_household <- test$total_rooms / test$households
+train$income_age_interaction <- train$median_income * train$housing_median_age
+test$income_age_interaction <- test$median_income * test$housing_median_age
+train$lat_long_interaction <- train$latitude * train$longitude
+test$lat_long_interaction <- test$latitude * test$longitude
+train$pop_household_interaction <- train$population / train$households
+test$pop_household_interaction <- test$population / test$households
+train$pop_household_interaction <- train$population / train$households
+test$pop_household_interaction <- test$population / test$households
+train$bedrooms_per_household <- train$total_bedrooms / train$households
+test$bedrooms_per_household <- test$total_bedrooms / test$households
+
+income_categories <- function(data) {
+  data$income_cat <- cut(data$median_income / 1.5,
+                         breaks = c(0, 1, 2, 3, 4, Inf),
+                         labels = c(1, 2, 3, 4, 5),
+                         include.lowest = TRUE)
+  return(data)
+}
+
+outliers_variables <- c("total_rooms", "total_bedrooms", "population", "households", "median_house_value")
+
+for (i in outliers_variables) {
+  train[[i]] <- Winsorize(train[[i]], probs = c(0.05, 0.95))
+  test[[i]] <- Winsorize(test[[i]], probs = c(0.05, 0.95))
+}
+
+
+train <- income_categories(train)
+test <- income_categories(test)
+
+train$median_house_value <- log(train$median_house_value)
+test$median_house_value <- log(test$median_house_value)
+
+check_rmse(train, test) #0.2999154
+
+
+```
+
+**I experimented with various feature engineering techniques to reduce the RMSE. These included different combinations of independent and dependent variables that underwent log transformations, excluding some features based on their correlations, and applying Winsorization to certain variables to minimize the impact of outliers. Ultimately, the best model included all variables and employed Winsorization with 5% and 95% quantiles, with a RMSE of 0.2996113. In the future, additional feature engineering can be explored to enhance the predictive power of the model. Possibilities include more complex interactions among variables and implementing mathematical modifications to account for non-linear relationships.**
+
+__Exercise 3__
+
+Much discussion about machine learning and AI over the recent months has been driven by large language models (LLMs). At the moment, these models are typically decoder transformers of the kind that we discussed in the lecture. For now the GPT models such as ChatGPT are most popularised and able to follow instructions quite well, but there are several models from other providers available and more will be released in the upcoming months and years.
+
+There likely exist a multitude of potential research projects in the social sciences where such models could be utilised. For some social science research involving texts, you can e.g. think of an LLM like an electronic research assistant that can process texts very well and at scale, summarise them, extract information from them, etc. You could repeatedly submit short to medium length texts to the model and ask questions about these. For example, a query to the model might look like:
+
+"[Some excerpt from an economic text pasted here, e.g. from a newspaper or company report]
+
+Yes or no, does this text deal with environmental issues? If yes, summarise the environmental issues in less than 200 words. Lastly, is the sentiment of the text likely positive, negative, or neutral?"
+
+The response text generated by the model will contain a sentiment label and potentially also a summary. These pieces of information could be separated and stored in a row of a tabular dataset (e.g. to then analyse subsequently with simpler methods). Afterwards the next newspaper text/company report could be parsed into the model with the same question added below it, and so on. In the end, a dataset assembled from such prompts might e.g. be used in a wider research paper analysing environmental discussions in company reports and how they changed over time.
+
+This exercise is meant as a space for you to brainstorm and develop ideas how LLMs could be used in a research project in your field of the social sciences. Write a short research proposal/extended abstract of __up to 600 words__ where you try to develop a research idea. This text is __not meant to be only generic__ like "One could use LLMs in financial economics research", but instead meant to describe a proposed research idea/project as precisely as possible given the word limit. Make sure to cite relevant literature and sources where appropriate and list them in the references. While developing the idea, you might further read into large language models. One important particularity of these models to recall from the lecture is their maximum context window length -- it is so far not possible to parse very long texts into them in a single query and have them understand all text at once. So a research idea containing "I paste the following book that contains 2000 pages into the model as only a single combined input text and ask it to summarise this text" would not be feasible. Reading up on these and other limitations will make sure that your short research proposal remains realistic in terms of what these models currently can and also cannot do.
+
+Begin the answer by stating a research question. As part of your answer, you can also e.g. mention potential prompts, how their answers by the LLM could be used for assembling a dataset for the project, short details of the subsequent analysis, for which tasks simpler approaches also covered in this course might be preferable (e.g. for plain sentiment analysis, a simpler tool might be almost as good, but much faster and cheaper then sending each text to an LLM), or which current limitations of LLMs could be relevant for the research project. Lastly, try to develop a new idea in this exercise rather than one related to another project you are/have been working on, but if it relates to any other of your work, make sure to cite it clearly in the references. (7 points)
+
+More original and concrete answers that display more detailed understanding of methods discussed in this course will receive more points here. Also see the marking criteria at https://lse-my474.github.io/ for further information. 
+
+# Research question
+
+The use of LLMs in predicting consumer preferences in the household cleaning supplies category using online reviews.
+
+## Why LLMs?
+
+*Large Language Models (LLMs)* are useful for research today due to their ability to process nuanced conversation brought about by the fact that they have been trained on masses of nuanced human language which allows them to parse through regular expression in large amounts of data and pick up on specific elements, classify them based on outlined criteria, and learn and predict relationships (Gururangan et al., 2020).
+
+## Assembling a Dataset
+
+Given the above use of LLMs and the research question outlined above, an LLM could be trained for product reviews in household cleaning supplies to pick up on (1) positive, negative or neutral sentiment, (2) mentioned features, (3) whether other products were mentioned or not (4) price satisfaction. At least 2-300 products should be used to extract their reviews, and these products should be evenly split across the number of stars (Ansari, Essegaier, & Kohli, 2000). The reason household cleaning supplies have been chosen as a category is because they are widely used, have a lot of reviews on online platforms, and tend to result in very particular and binary reviews.
+
+## The Analysis
+
+Once the dataset is complete, it will speak to what kind of products customers are more likely to prefer over others, which features in products are most mentioned when products are preferred or when they are disliked, and what the correlation of price to features to preference is. Once a model has been trained on existing reviews, product descriptions for new products can then be fed into the system for the system to predict whether those features, product category and price will result in generally favorable reviews from the consumer or not (Li, Goh, & Jin, 2020).
+
+## The Limitations
+
+Given the fact that a lot of online reviews rely on nuanced consumer back-and-forth which resembles conversation, it is important to address the fact that LLMs are not often able to pick up on this nuance unless specifically trained via reinforcement learning to understand human intent. Research found that when LLMs were tested to see whether they understood implied context, their performance became random (Ruis et al., 2022). Even when trained, their accuracy was at best 72 percent compared to the 86 percent that humans can achieve on average (Ruis et al., 2022). There is therefore an obvious issue where nuanced predictions are hard to achieve given the generalized and conversational language people use in product reviews.
+
+# References
+
+Ansari, A., Essegaier, S., & Kohli, R. (2000). Internet recommendation systems.
+
+Gururangan, S., Marasović, A., Swayamdipta, S., Lo, K., Beltagy, I., Downey, D., & Smith, N. A. (2020). Don't stop pretraining: Adapt language models to domains and tasks. arXiv preprint arXiv:2004.10964.
+
+Li, L., Goh, T. T., & Jin, D. (2020). How textual quality of online reviews affect classification performance: a case of deep learning sentiment analysis. Neural Computing and Applications, 32, pp. 4387-4415.
+
+Ruis, L., Khan, A., Biderman, S., Hooker, S., Rocktäschel, T., & Grefenstette, E. (2022). Large language models are not zero-shot communicators. arXiv preprint ar
+
+
+
+Note: For a bit of background how one would actually send texts to such a model in a research project -- For now, many LLMs cannot be run locally on computers because they are too large, but instead are commonly used via a browsers. In a research project, however, it would be much easier to query the underlying model via an API (Application Programming Interface; if you are interested in the topic, have a look at the recording of week 8 in MY472) which are also often offered by the providers. In a nutshell, querying the model via an API means to send the input text with a programming language such as R or Python over the internet and receive the answer of the model (e.g. the response text or a numerical embedding of the text -- the LLMs can also return only embeddings that could be used for own downstream tasks!) back directly in the programming language. This allows to send many smaller texts to the model via loops and to process their returns directly in the programming language rather than using a visual user interface in a browser.
+
+
+__Exercise 4__
+
+Use the cifar data set from the lecture coding example `02-cnn.Rmd`. Keeping the training and test samples exactly the same as in the lecture code, can you achieve a higher accuracy than what we found in the lecture? The purpose of this exercise is to independently study some interesting concepts in neural networks which can increase predictive performance. You might e.g. want to look into topics such as batch normalisation, dropout (note: it is generally not advisable to use dropout in the convolutional layers), or other forms of regularisation. Furthermore, you can try different combinations of layers, amounts of filter, the kernel sizes of the individual filters, different numbers of training episodes (while the training loss decreases, did the validation loss already increase?), etc. Another approach is to explore alternative model architectures altogether which might improve the performance for the cifar task as well. You can find many alternative models here: https://github.com/rstudio/keras/tree/master/vignettes/examples.
+
+Which __test set__ accuracy does your best model achieve? Which changes could improve the model? (5 points)
+
+```{r}
+
+install_keras()
+
+cifar <- dataset_cifar10()
+
+class_names <- c('airplane', 'automobile', 'bird', 'cat', 'deer',
+               'dog', 'frog', 'horse', 'ship', 'truck')
+
+index <- 1:30
+
+par(mfcol = c(5,6), mar = rep(1, 4), oma = rep(0.2, 4))
+cifar$train$x[index,,,] %>% 
+  purrr::array_tree(1) %>%
+  purrr::set_names(class_names[cifar$train$y[index] + 1]) %>% 
+  purrr::map(as.raster, max = 255) %>%
+  purrr::iwalk(~{plot(.x); title(.y)})
+
+#Define and compile the model:
+
+model <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), activation = "relu", 
+                input_shape = c(32,32,3)) %>% 
+  layer_max_pooling_2d(pool_size = c(2,2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2,2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 64, activation = "relu") %>% 
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model)
+
+model %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history <- model %>% 
+  fit(
+    x = cifar$train$x, y = cifar$train$y,
+    epochs = 10,
+    validation_data = unname(cifar$test),
+    verbose = 2
+  )
+
+
+``` 
+
+```{r}
+
+cifar2 <- dataset_cifar10()
+
+cifar2$train$x <- cifar$train$x / 255
+cifar2$test$x <- cifar$test$x / 255
+
+#MODEL 7 - Increase the number of the filter (3 filters) + batch normalization + normalization of the data + batch_size + neurons + drop_out
+
+model7 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu", 
+                input_shape = c(32,32,3)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 128, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 256, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 256, activation = "relu") %>% 
+      layer_dropout(rate = 0.5) %>%
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model7)
+
+model7 %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history7 <- model7 %>% 
+  fit(
+    x = cifar2$train$x, y = cifar2$train$y,
+    epochs = 50,
+    validation_data = unname(cifar2$test),
+    verbose = 2,
+    callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+  )
+
+evaluate(model, cifar$test$x, cifar$test$y, verbose = 0)
+evaluate(model7, cifar2$test$x, cifar2$test$y, verbose = 0)
+
+plot(history)
+plot(history7)
+
+``` 
+
+
+**Answer: Answer: I made several adjustments to the convolutional neural network's parameters and hyperparameters to improve accuracy. I started by normalising the data, as we did in class. In order to increase the model's complexity and accuracy, I also increased the number of filters and neurons in each layer. I also tried bigger kernel sizes to capture bigger patterns and improve the model's precision. In order to give the model more opportunities to iterate over the entire dataset, I increased the number of epochs to 50.**
+
+**However, although improving accuracy, these adjustments might also result in overfitting, which reduces the model's generalizability. I repeatedly changed the model's parameters and hyperparameters to prevent possible overfitting. To reduce the possibility of overfitting, I used batch normalisation to normalise the activations between layers. MI incorporated max pooling, which decreases the number of parameters in the network and helps prevent overfitting. To further prevent overfitting, I included a dropout layer with a rate that randomly deactivates a portion of neurons during training.**
+
+**I employed L2 regularisation to discourage overfitting and penalise heavy weights. The penalty's severity was determined by the l2_strength, which was set to 0.001. Finally, I added early stopping with a patience of 5, which means training will end if the model does not improve after five successive epochs. These modifications seek to balance improving the model's accuracy and preventing overfitting.** 
+
+**Additionally, I developed 9 different models, each with unique combinations of hyperparameters. To evaluate the models, I considered their accuracy and analysed the interaction between training loss and validation loss by plotting the history. If the training loss is substantially lower than the validation loss, it indicates that the model is likely overfitting the data. Moreover, if the validation loss ceases to decrease and begins to increase while the training loss continues to decrease, the model is also overfitting the data.**
+
+**Among all the models, the best balance between accuracy and avoiding overfitting was achieved by model number 7. This model has a 0.5 dropout rate at the end, additional filters, more neurons in each layer, batch normalisation, and pooling. Since running all the models takes a long time, I will just include model number 7 and the results from the model run during the lecture in the HTML output. The chunk below has the code for the other models, which you can review.**
+
+```{r eval = FALSE}
+
+#MODEL 2 - Increase the number of the filter (3 filters) + batch normalization + normalization of the data
+
+model2 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), activation = "relu", 
+                input_shape = c(32,32,3)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 128, activation = "relu") %>% 
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model2)
+
+model2 %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history2 <- model2 %>% 
+  fit(
+    x = cifar2$train$x, y = cifar2$train$y,
+    epochs = 50,
+    validation_data = unname(cifar2$test),
+    verbose = 2,
+    callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+  )
+
+#MODEL 3 - Increase the number of the filter (3 filters) + batch normalization + normalization of the data + batch_size
+
+model3 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3,3), activation = "relu", 
+                input_shape = c(32,32,3)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 128, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 128, activation = "relu") %>% 
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model3)
+
+model3 %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history3 <- model3 %>% 
+  fit(
+    x = cifar2$train$x, y = cifar2$train$y,
+    epochs = 50,
+    validation_data = unname(cifar2$test),
+    verbose = 2,
+    batch_size = 64,
+    callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+  )
+
+#MODEL 4 - Increase the number of the filter (3 filters) + batch normalization + normalization of the data + batch_size + neurons
+
+model4 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu", 
+                input_shape = c(32,32,3)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 128, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 256, kernel_size = c(3,3), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 256, activation = "relu") %>% 
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model4)
+
+model4 %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history4 <- model4 %>% 
+  fit(
+    x = cifar2$train$x, y = cifar2$train$y,
+    epochs = 50,
+    validation_data = unname(cifar2$test),
+    verbose = 2,
+    batch_size = 64,
+    callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+  )
+
+#MODEL 5 - Increase the number of the filter (3 filters) + batch normalization + normalization of the data + batch_size + neurons + kernel 
+
+model5 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(4,4), activation = "relu", 
+                input_shape = c(32,32,3)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 128, kernel_size = c(4,4), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_conv_2d(filters = 256, kernel_size = c(4,4), activation = "relu") %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 256, activation = "relu") %>% 
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model5)
+
+model5 %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history5 <- model5 %>% 
+  fit(
+    x = cifar2$train$x, y = cifar2$train$y,
+    epochs = 50,
+    validation_data = unname(cifar2$test),
+    verbose = 2,
+    batch_size = 64,
+    callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+  )
+
+
+# Model 8 -  Increase the number of the filter (3 filters) + batch normalization + normalization of the data + batch_size + neurons + drop_out + l2 
+
+l2_strength <- 0.001
+
+model8 <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu", 
+                kernel_regularizer = regularizer_l2(l2_strength),
+                input_shape = c(32,32,3)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3,3), activation = "relu", 
+                kernel_regularizer = regularizer_l2(l2_strength)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>% 
+  layer_conv_2d(filters = 256, kernel_size = c(3,3), activation = "relu", 
+                kernel_regularizer = regularizer_l2(l2_strength)) %>% 
+  layer_batch_normalization() %>%
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 256, activation = "relu", 
+              kernel_regularizer = regularizer_l2(l2_strength)) %>% 
+        layer_dropout(rate = 0.5) %>%
+  layer_dense(units = 10, activation = "softmax")
+
+summary(model8)
+
+model8 %>% compile(
+  optimizer = "adam",
+  loss = "sparse_categorical_crossentropy",
+  metrics = "accuracy"
+)
+
+# Training
+
+history8 <- model8 %>% 
+  fit(
+    x = cifar2$train$x, y = cifar2$train$y,
+    epochs = 50,
+    validation_data = unname(cifar2$test),
+    verbose = 2,
+    callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+  )
+
+# Model 9 -  Increase the number of the filter (3 filters) + batch normalization + normalization of the data + batch_size + neurons + drop_out + l2 + dropout_rate
+
+dropout_rate = 0.3
+
+model9 <- keras_model_sequential() %>% 
+    layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu", #filter = 64 neurons, kernel (size of the image) 3,3
+                  kernel_regularizer = regularizer_l2(l2_strength), #using l2
+                  input_shape = c(32,32,3)) %>% 
+    layer_batch_normalization() %>% #batch normalization
+    layer_max_pooling_2d(pool_size = c(2,2)) %>% #pooling 
+    layer_dropout(rate = dropout_rate) %>%
+    layer_conv_2d(filters = 128, kernel_size = c(3,3), activation = "relu",
+                  kernel_regularizer = regularizer_l2(l2_strength)) %>% 
+    layer_batch_normalization() %>%
+    layer_max_pooling_2d(pool_size = c(2,2)) %>%
+    layer_dropout(rate = dropout_rate) %>%
+    layer_conv_2d(filters = 256, kernel_size = c(3,3), activation = "relu",
+                  kernel_regularizer = regularizer_l2(l2_strength)) %>% 
+    layer_batch_normalization() %>%
+    layer_max_pooling_2d(pool_size = c(2,2)) %>%
+    layer_dropout(rate = dropout_rate) %>%
+    layer_flatten() %>% 
+    layer_dense(units = 256, activation = "relu",
+                kernel_regularizer = regularizer_l2(l2_strength)) %>% 
+    layer_dropout(rate = 0.5) %>%
+    layer_dense(units = 10, activation = "softmax")
+  
+  model9 %>% compile(
+    optimizer = "adam",
+    loss = "sparse_categorical_crossentropy",
+    metrics = "accuracy"
+  )
+  
+# Training
+history9 <- model9 %>% 
+    fit(
+      x = cifar2$train$x, y = cifar2$train$y,
+      epochs = 50,
+      validation_data = unname(cifar2$test),
+      verbose = 2,
+      callbacks = list(callback_early_stopping(patience = 5, monitor = "val_loss"))
+    )
+  
+
+
+evaluate(model, cifar$test$x, cifar$test$y, verbose = 0)
+
+evaluate(model2, cifar2$test$x, cifar2$test$y, verbose = 0)
+
+evaluate(model3, cifar2$test$x, cifar2$test$y, verbose = 0)
+
+evaluate(model4, cifar2$test$x, cifar2$test$y, verbose = 0)
+
+evaluate(model5, cifar2$test$x, cifar2$test$y, verbose = 0)
+
+evaluate(model6, cifar2$test$x, cifar2$test$y, verbose = 0)
+evaluate(model7, cifar2$test$x, cifar2$test$y, verbose = 0)
+evaluate(model8, cifar2$test$x, cifar2$test$y, verbose = 0)
+evaluate(model9, cifar2$test$x, cifar2$test$y, verbose = 0)
+
+plot(history)
+plot(history2)
+plot(history3)
+plot(history4)
+plot(history5)
+plot(history7)
+plot(history8)
+plot(history9)
+
+```
+
+
+
+__Alternative Exercise 4__
+
+__Only students on whose computers Keras does not work in R may attempt this alternative exercise. If this is the case for you, please make sure to take screenshots of the precise error messages in your case and submit the screenshots in the assignment folder as well.__
+
+Using and tuning any algorithm discussed in this course and training it on `housing_train.csv`, what is the very best RMSE you can achieve predicting `median_house_value` on the test data `housing_test.csv`? You can also use algorithms/R packages not discussed in the course as long as you can describe how they work (Part 4.2). Feel free to keep your engineered features from Exercise 1 if they turn out helpful with the new model as well, but the main task here is to explore how much models other than the LASSO used previously can improve predictions.
+
+What is the lowest test RMSE you can achieve with your best prediction model? Which algorithms could improve the prediction? (5 points)
+
+```
+
